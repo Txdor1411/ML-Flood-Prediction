@@ -106,6 +106,33 @@ def build_map(features: dict, risk: np.ndarray, rainfall_pct: int, opacity: floa
 
     m = folium.Map(location=center, zoom_start=9, tiles="CartoDB positron", control_scale=True)
 
+    # Keep legal provider attribution, but remove Leaflet prefix text for a cleaner look.
+    m.get_root().html.add_child(
+        Element(
+            """
+<style>
+.leaflet-control-attribution {
+    font-size: 10px !important;
+    background: rgba(255, 255, 255, 0.72) !important;
+    color: #6c757d !important;
+    padding: 1px 6px !important;
+    border-radius: 6px 0 0 0;
+}
+</style>
+<script>
+setTimeout(function () {
+  var maps = document.getElementsByClassName('leaflet-container');
+  for (var i = 0; i < maps.length; i++) {
+    if (maps[i]._leaflet_map && maps[i]._leaflet_map.attributionControl) {
+      maps[i]._leaflet_map.attributionControl.setPrefix('');
+    }
+  }
+}, 0);
+</script>
+"""
+        )
+    )
+
     rgba = (RISK_HEATMAP(risk) * 255).astype(np.uint8)
     folium.raster_layers.ImageOverlay(
         image=rgba,
