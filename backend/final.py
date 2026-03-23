@@ -248,7 +248,7 @@ button[title="Deploy"] {
 	st.title("Flood Risk Simulator")
 	st.caption("Pick a center and square size to analyze any area.")
 
-	downsample = st.sidebar.slider("Grid downsample", min_value=30, max_value=500, value=220, step=20)
+	downsample = st.sidebar.slider("Grid downsample", min_value=10, max_value=500, value=220, step=20)
 	rainfall_pct = st.sidebar.slider("Rainfall (%)", min_value=0, max_value=200, value=100, step=10)
 	center_lat = st.sidebar.number_input(
 		"Center latitude",
