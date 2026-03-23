@@ -25,6 +25,36 @@
                     top: 0.0%;
                 }
                 .leaflet-container { font-size: 1rem; }
+                .legend.leaflet-control {
+                    background: rgba(9, 18, 43, 0.9);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    border-radius: 12px;
+                    box-shadow: 0 5px 16px rgba(0, 0, 0, 0.24);
+                    padding: 8px 10px 6px;
+                    color: #f8fbff;
+                    margin-top: 50px;
+                }
+                .legend .caption {
+                    fill: #eaf1ff;
+                    font-size: 10px;
+                    text-anchor: middle;
+                }
+                .legend .tick text {
+                    fill: #d6e1ff;
+                    font-size: 8px;
+                }
+                .legend .domain,
+                .legend .tick line {
+                    stroke: rgba(214, 225, 255, 0.45);
+                }
+                .leaflet-top.leaflet-left {
+                    width: 100%;
+                    pointer-events: none;
+                }
+                .leaflet-top.leaflet-left .legend.leaflet-control {
+                    pointer-events: auto;
+                    margin-left: calc(50% - 110px);
+                }
             </style>
 
             <style>html, body {
@@ -83,7 +113,8 @@
                     crs: L.CRS.EPSG3857,
                     ...{
   "zoom": 9,
-  "zoomControl": true,
+    "zoomControl": false,
+    "attributionControl": false,
   "preferCanvas": false,
 }
 
@@ -101,7 +132,7 @@
   "maxZoom": 20,
   "maxNativeZoom": 20,
   "noWrap": false,
-  "attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors \u0026copy; \u003ca href=\"https://carto.com/attributions\"\u003eCARTO\u003c/a\u003e",
+    "attribution": "",
   "subdomains": "abcd",
   "detectRetina": false,
   "tms": false,
@@ -137,9 +168,9 @@
 
     color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.x = d3.scale.linear()
               .domain([0.0, 1.0])
-              .range([0, 450 - 50]);
+              .range([0, 220 - 34]);
 
-    color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.legend = L.control({position: 'topright'});
+    color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.legend = L.control({position: 'topleft'});
     color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.legend.onAdd = function (map) {var div = L.DomUtil.create('div', 'legend'); return div};
     color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.legend.addTo(map_4773cb2ee601e1f12609d9afab101743);
 
@@ -151,13 +182,13 @@
 
     color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.svg = d3.select(".legend.leaflet-control").append("svg")
         .attr("id", 'legend')
-        .attr("width", 450)
-        .attr("height", 40);
+        .attr("width", 220)
+        .attr("height", 34);
 
     color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.g = color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.svg.append("g")
         .attr("class", "key")
         .attr("fill", "black")
-        .attr("transform", "translate(25,16)");
+        .attr("transform", "translate(17,14)");
 
     color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.g.selectAll("rect")
         .data(color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.color.range().map(function(d, i) {
@@ -168,15 +199,16 @@
           };
         }))
       .enter().append("rect")
-        .attr("height", 40 - 30)
+        .attr("height", 4)
         .attr("x", function(d) { return d.x0; })
         .attr("width", function(d) { return d.x1 - d.x0; })
         .style("fill", function(d) { return d.z; });
 
     color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.g.call(color_map_76ad5e9bbfd62c5ba244619e2d9fb1fd.xAxis).append("text")
         .attr("class", "caption")
-        .attr("y", 21)
-        .attr("fill", "black")
+        .attr("x", 93)
+        .attr("y", 17)
+        .attr("fill", "#eaf1ff")
         .text("Relative flood risk (0-1)");
     
         function geo_json_221e69a00725c838133256891ca4e500_styler(feature) {
@@ -210,25 +242,5 @@
             geo_json_221e69a00725c838133256891ca4e500.addTo(map_4773cb2ee601e1f12609d9afab101743);
         
     
-            var layer_control_49277eb54dcc5d84a0dc6091198a80ce_layers = {
-                base_layers : {
-                    "cartodbpositron" : tile_layer_73d66f9cf10e0eaa6ff4a1c0b1039ab4,
-                },
-                overlays :  {
-                    "Flood risk" : image_overlay_aece57f4f68ff0b4972e2febdca6748a,
-                    "Rivers" : geo_json_221e69a00725c838133256891ca4e500,
-                },
-            };
-            let layer_control_49277eb54dcc5d84a0dc6091198a80ce = L.control.layers(
-                layer_control_49277eb54dcc5d84a0dc6091198a80ce_layers.base_layers,
-                layer_control_49277eb54dcc5d84a0dc6091198a80ce_layers.overlays,
-                {
-  "position": "topright",
-  "collapsed": true,
-  "autoZIndex": true,
-}
-            ).addTo(map_4773cb2ee601e1f12609d9afab101743);
-
-        
 </script>
 </html>

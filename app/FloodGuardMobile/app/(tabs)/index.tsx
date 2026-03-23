@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Dimensions,
+  Image,
   KeyboardAvoidingView,
+  PanResponder,
   Platform,
   Pressable,
   StyleSheet,
@@ -12,6 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
+import * as NavigationBar from 'expo-navigation-bar';
 import { WebView } from 'react-native-webview';
 
 type PanelMode = 'routes' | 'chat' | 'alert';
@@ -49,9 +54,19 @@ const ROUTES = [
   },
 ];
 
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const PANEL_HEIGHT = Math.round(SCREEN_HEIGHT * 0.92);
+const PANEL_PEEK_HEIGHT = Platform.OS === 'android' ? 64 : 40;
+const PANEL_SNAP_TOP = 0;
+const PANEL_SNAP_MID = Math.round(SCREEN_HEIGHT * 0.34);
+const PANEL_SNAP_LOW = PANEL_HEIGHT - PANEL_PEEK_HEIGHT;
+const FLOATING_BUTTONS_BOTTOM = 168;
+
+type PanelSnap = 'top' | 'mid' | 'low';
+
 export default function FloodMapScreen() {
   const [panelMode, setPanelMode] = useState<PanelMode>('routes');
-  const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
+  const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
   const [mapUri, setMapUri] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -62,6 +77,10 @@ export default function FloodMapScreen() {
     },
   ]);
   const [isSending, setIsSending] = useState(false);
+  const panelTranslateY = useRef(new Animated.Value(PANEL_SNAP_LOW)).current;
+  const panelTranslateYRef = useRef(PANEL_SNAP_LOW);
+  const panelDragStartRef = useRef(0);
+  const [panelSnap, setPanelSnap] = useState<PanelSnap>('low');
 
   useEffect(() => {
     let isMounted = true;
@@ -84,6 +103,42 @@ export default function FloodMapScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    let isMounted = true;
+
+    const keepAndroidSystemBarHidden = async () => {
+      try {
+        await NavigationBar.setPositionAsync('absolute');
+        await NavigationBar.setBackgroundColorAsync('#00000000');
+        await NavigationBar.setBehaviorAsync('overlay-swipe');
+        await NavigationBar.setVisibilityAsync('hidden');
+      } catch {
+        // Ignore if this device/launcher does not allow immersive controls.
+      }
+    };
+
+    void keepAndroidSystemBarHidden();
+
+    const rehideInterval = setInterval(() => {
+      if (!isMounted) {
+        return;
+      }
+
+      void NavigationBar.setVisibilityAsync('hidden').catch(() => {
+        // Ignore intermittent platform errors while re-hiding the nav bar.
+      });
+    }, 1200);
+
+    return () => {
+      isMounted = false;
+      clearInterval(rehideInterval);
+    };
+  }, []);
+
   const panelTitle = useMemo(() => {
     if (panelMode === 'chat') {
       return 'FloodGuard AI';
@@ -93,6 +148,85 @@ export default function FloodMapScreen() {
     }
     return 'Evacuation Routes';
   }, [panelMode]);
+
+  useEffect(() => {
+    const listenerId = panelTranslateY.addListener(({ value }) => {
+      panelTranslateYRef.current = value;
+    });
+
+    return () => {
+      panelTranslateY.removeListener(listenerId);
+    };
+  }, [panelTranslateY]);
+
+  const settlePanel = useCallback((target: PanelSnap) => {
+    setPanelSnap(target);
+    setIsPanelCollapsed(target === 'low');
+    Animated.spring(panelTranslateY, {
+      toValue: target === 'top' ? PANEL_SNAP_TOP : target === 'mid' ? PANEL_SNAP_MID : PANEL_SNAP_LOW,
+      useNativeDriver: true,
+      damping: 18,
+      stiffness: 210,
+      mass: 0.3,
+    }).start();
+  }, [panelTranslateY]);
+
+  const panelPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 3,
+        onPanResponderGrant: () => {
+          panelDragStartRef.current = panelTranslateYRef.current;
+        },
+        onPanResponderMove: (_, gestureState) => {
+          const nextValue = Math.max(
+            PANEL_SNAP_TOP,
+            Math.min(PANEL_SNAP_LOW, panelDragStartRef.current + gestureState.dy)
+          );
+          panelTranslateY.setValue(nextValue);
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          const value = panelTranslateYRef.current;
+
+          if (gestureState.vy > 0.7) {
+            settlePanel(value < PANEL_SNAP_MID ? 'mid' : 'low');
+            return;
+          }
+
+          if (gestureState.vy < -0.7) {
+            settlePanel(value > PANEL_SNAP_MID ? 'mid' : 'top');
+            return;
+          }
+
+          const distTop = Math.abs(value - PANEL_SNAP_TOP);
+          const distMid = Math.abs(value - PANEL_SNAP_MID);
+          const distLow = Math.abs(value - PANEL_SNAP_LOW);
+
+          if (distTop <= distMid && distTop <= distLow) {
+            settlePanel('top');
+          } else if (distMid <= distLow) {
+            settlePanel('mid');
+          } else {
+            settlePanel('low');
+          }
+        },
+        onPanResponderTerminate: () => {
+          const value = panelTranslateYRef.current;
+          const distTop = Math.abs(value - PANEL_SNAP_TOP);
+          const distMid = Math.abs(value - PANEL_SNAP_MID);
+          const distLow = Math.abs(value - PANEL_SNAP_LOW);
+
+          if (distTop <= distMid && distTop <= distLow) {
+            settlePanel('top');
+          } else if (distMid <= distLow) {
+            settlePanel('mid');
+          } else {
+            settlePanel('low');
+          }
+        },
+      }),
+    [panelTranslateY, settlePanel]
+  );
 
   const sendMessage = async () => {
     if (isSending) {
@@ -207,39 +341,35 @@ export default function FloodMapScreen() {
         )}
         <View style={styles.mapTint} pointerEvents="none" />
 
-        <SafeAreaView style={styles.safeArea}>
+        <SafeAreaView style={styles.safeArea} pointerEvents="box-none">
           <View style={styles.topRow}>
-            <View style={styles.logoPill}>
-              <Text style={styles.logoText}>FG</Text>
-            </View>
-            <View style={styles.topActionPill}>
-              <Pressable style={styles.topIconButton}>
-                <Feather name="user" size={24} color="#0B122A" />
-              </Pressable>
-              <Pressable style={styles.topIconButton}>
-                <Feather name="settings" size={24} color="#0B122A" />
-              </Pressable>
+            <View style={styles.logoContainer}>
+              <Image
+                source={require('@/assets/images/Flood Guard png logo white.png')}
+                style={styles.logoImage}
+                resizeMode="contain"
+              />
             </View>
           </View>
 
-          <View style={styles.rightButtonsColumn}>
+          <View style={[styles.rightButtonsColumn, { bottom: FLOATING_BUTTONS_BOTTOM }]}> 
             <RoundActionButton
               active={panelMode === 'chat'}
-              icon={<MaterialCommunityIcons name="robot-outline" size={30} color="#FFFFFF" />}
+              icon={<MaterialCommunityIcons name="robot-outline" size={24} color="#FFFFFF" />}
               activeColor="#4EAFA8"
               idleColor="#4D3E95"
               onPress={() => setPanelMode('chat')}
             />
             <RoundActionButton
               active={panelMode === 'routes'}
-              icon={<MaterialCommunityIcons name="clipboard-text-outline" size={30} color="#FFFFFF" />}
+              icon={<MaterialCommunityIcons name="clipboard-text-outline" size={24} color="#FFFFFF" />}
               activeColor="#4EAFA8"
               idleColor="#4D3E95"
               onPress={() => setPanelMode('routes')}
             />
             <RoundActionButton
               active={panelMode === 'alert'}
-              icon={<Feather name="volume-2" size={30} color="#FFFFFF" />}
+              icon={<Feather name="volume-2" size={24} color="#FFFFFF" />}
               activeColor="#4EAFA8"
               idleColor="#4D3E95"
               onPress={() => setPanelMode('alert')}
@@ -247,24 +377,19 @@ export default function FloodMapScreen() {
           </View>
 
           <KeyboardAvoidingView
+            style={styles.keyboardLayer}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             keyboardVerticalOffset={8}>
-            <View
+            <Animated.View
               style={[
                 styles.bottomPanel,
-                isPanelCollapsed && styles.bottomPanelCollapsed,
-                panelMode === 'chat' && !isPanelCollapsed && styles.bottomPanelChat,
-                panelMode === 'alert' && !isPanelCollapsed && styles.bottomPanelAlert,
+                { transform: [{ translateY: panelTranslateY }] },
               ]}>
-            <Pressable onPress={() => setIsPanelCollapsed((prev) => !prev)} style={styles.handlePressable}>
+            <View style={styles.panelDragTouchZone} {...panelPanResponder.panHandlers} />
+            <View style={styles.panelDragArea} pointerEvents="none">
               <View style={styles.handle} />
-              <Feather
-                name={isPanelCollapsed ? 'chevron-up' : 'chevron-down'}
-                size={20}
-                color="#D9DDE7"
-              />
-            </Pressable>
-            <Text style={styles.panelTitle}>{panelTitle}</Text>
+            </View>
+            {!isPanelCollapsed && <Text style={styles.panelTitle}>{panelTitle}</Text>}
 
             {!isPanelCollapsed && panelMode === 'routes' && (
               <View style={styles.routesList}>
@@ -353,7 +478,7 @@ export default function FloodMapScreen() {
                 </View>
               </View>
             )}
-            </View>
+            </Animated.View>
           </KeyboardAvoidingView>
         </SafeAreaView>
       </View>
@@ -407,7 +532,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0B1230',
   },
   mapBackground: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
   },
   webView: {
     ...StyleSheet.absoluteFillObject,
@@ -424,56 +549,44 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(33, 24, 42, 0.12)',
   },
   safeArea: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'space-between',
   },
   topRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 0,
     marginTop: 8,
   },
-  logoPill: {
-    minWidth: 82,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.88)',
-    alignItems: 'center',
+  logoContainer: {
+    width: 200,
+    height: 70,
+    marginLeft: -40,
+    overflow: 'hidden',
     justifyContent: 'center',
   },
-  logoText: {
-    color: '#0B122A',
-    fontWeight: '800',
-    fontSize: 22,
-    letterSpacing: 1,
-  },
-  topActionPill: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.88)',
-    borderRadius: 18,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 8,
-  },
-  topIconButton: {
-    width: 38,
-    height: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
+  logoImage: {
+    width: '138%',
+    height: '100%',
+    marginLeft: -52,
+    tintColor: '#000000',
   },
   rightButtonsColumn: {
     position: 'absolute',
     right: 20,
-    top: '36%',
-    gap: 14,
+    zIndex: 20,
+    gap: 12,
     alignItems: 'center',
   },
+  keyboardLayer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+  },
   roundAction: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000000',
@@ -486,31 +599,36 @@ const styles = StyleSheet.create({
     opacity: 0.84,
   },
   bottomPanel: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: PANEL_HEIGHT,
     backgroundColor: '#111F56',
     borderTopLeftRadius: 34,
     borderTopRightRadius: 34,
     paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 22,
-    minHeight: 260,
+    paddingTop: 14,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 22,
+    opacity: 1,
   },
-  bottomPanelCollapsed: {
-    minHeight: 112,
-    paddingBottom: 14,
-  },
-  bottomPanelChat: {
-    minHeight: 360,
-  },
-  bottomPanelAlert: {
-    minHeight: 340,
-  },
-  handlePressable: {
+  panelDragArea: {
+    width: '100%',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
     marginBottom: 8,
+    paddingVertical: 18,
+  },
+  panelDragTouchZone: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 120,
+    zIndex: 5,
   },
   handle: {
-    width: 92,
+    width: 96,
     height: 6,
     borderRadius: 999,
     backgroundColor: '#D9DDE7',
@@ -522,6 +640,7 @@ const styles = StyleSheet.create({
     fontSize: 30,
     fontWeight: '700',
     textAlign: 'center',
+    marginTop: 4,
     marginBottom: 18,
   },
   routesList: {
