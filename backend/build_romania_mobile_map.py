@@ -5,6 +5,9 @@ import geopandas as gpd
 from matplotlib import colors as mcolors
 import numpy as np
 import rasterio
+from affine import Affine
+from rasterio.features import rasterize
+from scipy.ndimage import distance_transform_edt
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
@@ -64,13 +67,17 @@ def compute_country_risk(downsample: int = 25) -> tuple[np.ndarray, rasterio.coo
     if len(rivers_roi) == 0:
         river_score = np.zeros_like(dem)
     else:
-        # Vectorized distance computation: much faster than per-cell Python loops.
-        river_union = rivers_roi.geometry.union_all()
-        grid_points = gpd.GeoSeries(
-            gpd.points_from_xy(lon_grid.ravel(), lat_grid.ravel()),
-            crs=rivers_roi.crs,
+        # Raster distance transform on the coarse grid is significantly faster.
+        coarse_transform = transform * Affine.scale(downsample, downsample)
+        river_mask = rasterize(
+            [(geom, 1) for geom in rivers_roi.geometry if geom is not None and not geom.is_empty],
+            out_shape=(rows, cols),
+            transform=coarse_transform,
+            fill=0,
+            all_touched=True,
+            dtype=np.uint8,
         )
-        river_dist = grid_points.distance(river_union).to_numpy().reshape(rows, cols)
+        river_dist = distance_transform_edt(river_mask == 0)
         river_score = 1.0 - normalize(river_dist)
 
     rain_pattern = 0.6 * flow_score + 0.4 * river_score
@@ -184,12 +191,14 @@ def build_map(risk: np.ndarray, bounds: rasterio.coords.BoundingBox, rivers_roi:
 (function() {{
     var panel = document.querySelector('.map-toggles');
     var panelBtn = document.getElementById('toggle-panel');
-    var mapRef = {map_name};
-    var riskLayer = {risk_name};
-    var riversLayer = {rivers_name if rivers_name is not None else 'null'};
-
     var riskToggle = document.getElementById('toggle-risk');
     var riverToggle = document.getElementById('toggle-rivers');
+
+    var mapRef = null;
+    var riskLayer = null;
+    var riversLayer = null;
+    var tries = 0;
+    var maxTries = 80;
 
     panelBtn.addEventListener('click', function() {{
         var isCollapsed = panel.classList.toggle('collapsed');
@@ -197,24 +206,35 @@ def build_map(risk: np.ndarray, bounds: rasterio.coords.BoundingBox, rivers_roi:
         panelBtn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
     }});
 
-    riskToggle.addEventListener('change', function() {{
-        console.log('Risk toggle:', this.checked, 'Layer:', riskLayer);
-        if (this.checked) {{
-            mapRef.addLayer(riskLayer);
-        }} else {{
-            mapRef.removeLayer(riskLayer);
-        }}
-    }});
+    function applyLayerState() {{
+        if (!mapRef || !riskLayer) return;
+        if (riskToggle.checked) mapRef.addLayer(riskLayer);
+        else mapRef.removeLayer(riskLayer);
 
-    riverToggle.addEventListener('change', function() {{
-        console.log('River toggle:', this.checked, 'Layer:', riversLayer);
-        if (!riversLayer) return;
-        if (this.checked) {{
-            mapRef.addLayer(riversLayer);
-        }} else {{
-            mapRef.removeLayer(riversLayer);
+        if (riversLayer) {{
+            if (riverToggle.checked) mapRef.addLayer(riversLayer);
+            else mapRef.removeLayer(riversLayer);
         }}
-    }});
+    }}
+
+    riskToggle.addEventListener('change', applyLayerState);
+    riverToggle.addEventListener('change', applyLayerState);
+
+    function initWhenReady() {{
+        mapRef = window['{map_name}'] || null;
+        riskLayer = window['{risk_name}'] || null;
+        riversLayer = window['{rivers_name}' ] || null;
+
+        if (mapRef && riskLayer) {{
+            applyLayerState();
+            return;
+        }}
+
+        tries += 1;
+        if (tries < maxTries) setTimeout(initWhenReady, 50);
+    }}
+
+    initWhenReady();
 }})();
 </script>
 """
@@ -279,4 +299,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
 
