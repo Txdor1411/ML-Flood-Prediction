@@ -86,7 +86,7 @@ export default function FloodMapScreen() {
     let isMounted = true;
 
     const loadLeafletMap = async () => {
-      const asset = Asset.fromModule(require('@/assets/maps/cluj_flood_risk.html'));
+      const asset = Asset.fromModule(require('@/assets/maps/romania_flood_risk_full.html'));
       await asset.downloadAsync();
 
       if (!isMounted) {
@@ -621,10 +621,10 @@ const styles = StyleSheet.create({
   },
   panelDragTouchZone: {
     position: 'absolute',
-    top: 0,
+    top: -24,
     left: 0,
     right: 0,
-    height: 120,
+    height: 170,
     zIndex: 5,
   },
   handle: {
