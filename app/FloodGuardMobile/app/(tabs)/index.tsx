@@ -8,6 +8,7 @@ import {
   PanResponder,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -27,7 +28,38 @@ type ChatMessage = {
   text: string;
 };
 
-const ROUTES = [
+type PlaceResult = {
+  name: string;
+  display_name: string;
+  lat: number;
+  lon: number;
+};
+
+type RiskPoint = {
+  risk_score: number;
+  risk_band: 'low' | 'medium' | 'high' | 'extreme';
+  recommendation: string;
+  nearby_rivers: string[];
+};
+
+type RouteCard = {
+  id: string;
+  title: string;
+  path: string;
+  status: 'Clear' | 'Caution' | 'Priority';
+  distance: string;
+  eta: string;
+};
+
+type SituationSummary = {
+  location_name: string;
+  risk_score: number;
+  risk_band: 'low' | 'medium' | 'high' | 'extreme';
+  summary: string;
+  nearby_rivers: string[];
+};
+
+const ROUTES: RouteCard[] = [
   {
     id: '1',
     title: 'Route 1',
@@ -54,6 +86,47 @@ const ROUTES = [
   },
 ];
 
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '');
+const LEGEND_COLORS = [
+  '#2ca25f',
+  '#46b56a',
+  '#62c574',
+  '#86d27a',
+  '#abd97f',
+  '#d1dd88',
+  '#f0d97d',
+  '#f8bf67',
+  '#f29a53',
+  '#e97040',
+  '#d73027',
+];
+
+function formatRiskBandLabel(band: RiskPoint['risk_band'] | SituationSummary['risk_band']): string {
+  if (band === 'low') {
+    return 'Low';
+  }
+  if (band === 'medium') {
+    return 'Moderate';
+  }
+  if (band === 'high') {
+    return 'High';
+  }
+  return 'Extreme';
+}
+
+function getRiskColor(band: RiskPoint['risk_band'] | SituationSummary['risk_band']): string {
+  if (band === 'low') {
+    return '#76DD2F';
+  }
+  if (band === 'medium') {
+    return '#E6C85C';
+  }
+  if (band === 'high') {
+    return '#F39C4A';
+  }
+  return '#F17368';
+}
+
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const PANEL_HEIGHT = Math.round(SCREEN_HEIGHT * 0.92);
 const PANEL_PEEK_HEIGHT = Platform.OS === 'android' ? 64 : 40;
@@ -68,6 +141,19 @@ export default function FloodMapScreen() {
   const [panelMode, setPanelMode] = useState<PanelMode>('routes');
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
   const [mapUri, setMapUri] = useState<string | null>(null);
+  const [routeCards, setRouteCards] = useState<RouteCard[]>(ROUTES);
+  const [selectedLocationName, setSelectedLocationName] = useState('Romania (default view)');
+  const [selectedLocationCoords, setSelectedLocationCoords] = useState<{ lat: number; lon: number } | null>(null);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLoadingLocationData, setIsLoadingLocationData] = useState(false);
+  const [isLayersOpen, setIsLayersOpen] = useState(false);
+  const [showRisk, setShowRisk] = useState(true);
+  const [showRivers, setShowRivers] = useState(true);
+  const [riskPoint, setRiskPoint] = useState<RiskPoint | null>(null);
+  const [situationSummary, setSituationSummary] = useState<SituationSummary | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -77,6 +163,7 @@ export default function FloodMapScreen() {
     },
   ]);
   const [isSending, setIsSending] = useState(false);
+  const webViewRef = useRef<WebView>(null);
   const panelTranslateY = useRef(new Animated.Value(PANEL_SNAP_LOW)).current;
   const panelTranslateYRef = useRef(PANEL_SNAP_LOW);
   const panelDragStartRef = useRef(0);
@@ -228,6 +315,195 @@ export default function FloodMapScreen() {
     [panelTranslateY, settlePanel]
   );
 
+  const moveMapToLocation = useCallback((lat: number, lon: number, zoom = 11) => {
+    const script = `
+      (function() {
+        var targetLat = ${lat};
+        var targetLon = ${lon};
+        var targetZoom = ${zoom};
+        var mapRef = window.__floodguardMap || null;
+        if (!mapRef) {
+          for (var key in window) {
+            if (Object.prototype.hasOwnProperty.call(window, key)) {
+              var candidate = window[key];
+              if (candidate && typeof candidate.setView === 'function' && typeof candidate.fitBounds === 'function') {
+                mapRef = candidate;
+                window.__floodguardMap = candidate;
+                break;
+              }
+            }
+          }
+        }
+
+        if (mapRef) {
+          mapRef.setView([targetLat, targetLon], targetZoom, { animate: true });
+          if (typeof L !== 'undefined') {
+            if (window.__floodguardMarker) {
+              window.__floodguardMarker.setLatLng([targetLat, targetLon]);
+            } else {
+              window.__floodguardMarker = L.circleMarker([targetLat, targetLon], {
+                radius: 7,
+                color: '#FFFFFF',
+                weight: 2,
+                fillColor: '#4EAFA8',
+                fillOpacity: 0.95,
+              }).addTo(mapRef);
+            }
+          }
+        }
+      })();
+      true;
+    `;
+    webViewRef.current?.injectJavaScript(script);
+  }, []);
+
+  useEffect(() => {
+    const script = `
+      (function() {
+        var mapRef = window.__floodguardMap || null;
+        if (!mapRef) {
+          for (var key in window) {
+            if (Object.prototype.hasOwnProperty.call(window, key)) {
+              var candidate = window[key];
+              if (candidate && typeof candidate.setView === 'function' && typeof candidate.fitBounds === 'function') {
+                mapRef = candidate;
+                window.__floodguardMap = candidate;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!mapRef) {
+          return;
+        }
+
+        var riskLayer = window.__floodguardRiskLayer || null;
+        var riversLayer = window.__floodguardRiversLayer || null;
+        var shouldShowRisk = ${showRisk ? 'true' : 'false'};
+        var shouldShowRivers = ${showRivers ? 'true' : 'false'};
+
+        if (riskLayer) {
+          if (shouldShowRisk) {
+            mapRef.addLayer(riskLayer);
+          } else {
+            mapRef.removeLayer(riskLayer);
+          }
+        }
+
+        if (riversLayer) {
+          if (shouldShowRivers) {
+            mapRef.addLayer(riversLayer);
+          } else {
+            mapRef.removeLayer(riversLayer);
+          }
+        }
+      })();
+      true;
+    `;
+
+    webViewRef.current?.injectJavaScript(script);
+  }, [showRisk, showRivers]);
+
+  const loadLocationContext = useCallback(async (location: PlaceResult) => {
+    if (!API_BASE_URL) {
+      setSearchError('Backend URL missing. Set EXPO_PUBLIC_API_BASE_URL in app env.');
+      return;
+    }
+
+    setSelectedLocationName(location.name);
+    setSelectedLocationCoords({ lat: location.lat, lon: location.lon });
+    setIsLoadingLocationData(true);
+    moveMapToLocation(location.lat, location.lon);
+
+    try {
+      const [riskResponse, routesResponse, summaryResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/risk/point`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: location.lat, lon: location.lon, rainfall_pct: 70 }),
+        }),
+        fetch(`${API_BASE_URL}/api/routes/cards`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: location.lat, lon: location.lon, rainfall_pct: 70 }),
+        }),
+        fetch(`${API_BASE_URL}/api/situation/summary`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lat: location.lat,
+            lon: location.lon,
+            location_name: location.name,
+            rainfall_pct: 70,
+          }),
+        }),
+      ]);
+
+      if (!riskResponse.ok || !routesResponse.ok || !summaryResponse.ok) {
+        throw new Error('One or more location endpoints failed');
+      }
+
+      const riskPayload: RiskPoint = await riskResponse.json();
+      const routesPayload: { routes: RouteCard[] } = await routesResponse.json();
+      const summaryPayload: SituationSummary = await summaryResponse.json();
+
+      setRiskPoint(riskPayload);
+      setRouteCards(routesPayload.routes);
+      setSituationSummary(summaryPayload);
+      setPanelMode('routes');
+      settlePanel('mid');
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          text: `Updated context for ${location.name}: ${summaryPayload.summary}`,
+        },
+      ]);
+    } catch {
+      setSearchError('Failed to load flood data for this location. Please retry.');
+    } finally {
+      setIsLoadingLocationData(false);
+    }
+  }, [moveMapToLocation, settlePanel]);
+
+  const runLocationSearch = useCallback(async () => {
+    const query = searchInput.trim();
+    if (!query) {
+      setSearchResults([]);
+      return;
+    }
+    if (!API_BASE_URL) {
+      setSearchError('Backend URL missing. Set EXPO_PUBLIC_API_BASE_URL in app env.');
+      return;
+    }
+
+    setIsSearching(true);
+    setSearchError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/geocode/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, limit: 6 }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Search request failed');
+      }
+
+      const payload: { results: PlaceResult[] } = await response.json();
+      setSearchResults(payload.results);
+      if (payload.results.length === 0) {
+        setSearchError('No Romanian location matches that query.');
+      }
+    } catch {
+      setSearchError('Search failed. Check backend connection and retry.');
+    } finally {
+      setIsSearching(false);
+    }
+  }, [searchInput]);
+
   const sendMessage = async () => {
     if (isSending) {
       return;
@@ -238,15 +514,14 @@ export default function FloodMapScreen() {
       return;
     }
 
-    const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-    if (!apiKey) {
+    if (!API_BASE_URL) {
       setChatMessages((prev) => [
         ...prev,
         { id: `u-${Date.now()}`, role: 'user', text: userText },
         {
           id: `a-${Date.now() + 1}`,
           role: 'assistant',
-          text: 'OpenAI key missing. Set EXPO_PUBLIC_OPENAI_API_KEY in your app env, then retry.',
+          text: 'Backend URL missing. Set EXPO_PUBLIC_API_BASE_URL in app env, then retry.',
         },
       ]);
       setChatInput('');
@@ -261,35 +536,27 @@ export default function FloodMapScreen() {
     setIsSending(true);
 
     try {
-      const response = await fetch('https://api.openai.com/v1/responses', {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: 'gpt-4.1-mini',
-          input: [
-            {
-              role: 'system',
-              content:
-                'You are FloodGuard AI. Give concise, practical flood safety guidance and evacuation advice.',
-            },
-            ...recentHistory.map((message) => ({
-              role: message.role,
-              content: message.text,
-            })),
-          ],
+          location_name: selectedLocationName,
+          messages: recentHistory.map((message) => ({
+            role: message.role,
+            content: message.text,
+          })),
         }),
       });
 
       if (!response.ok) {
         const errorBody = await response.text();
-        throw new Error(`OpenAI API error ${response.status}: ${errorBody}`);
+        throw new Error(`Backend chat error ${response.status}: ${errorBody}`);
       }
 
-      const data = await response.json();
-      const assistantText = extractAssistantText(data);
+      const data: { text?: string } = await response.json();
+      const assistantText = data.text?.trim() ?? '';
 
       setChatMessages((prev) => [
         ...prev,
@@ -307,7 +574,7 @@ export default function FloodMapScreen() {
         {
           id: `a-${Date.now()}`,
           role: 'assistant',
-          text: 'Connection failed. Please check network and API key, then try again.',
+          text: 'Connection failed. Please check backend and API key setup, then try again.',
         },
       ]);
     } finally {
@@ -320,6 +587,7 @@ export default function FloodMapScreen() {
       <View style={styles.mapBackground}>
         {mapUri ? (
           <WebView
+            ref={webViewRef}
             source={{ uri: mapUri }}
             style={styles.webView}
             originWhitelist={['*']}
@@ -342,13 +610,62 @@ export default function FloodMapScreen() {
         <View style={styles.mapTint} pointerEvents="none" />
 
         <SafeAreaView style={styles.safeArea} pointerEvents="box-none">
-          <View style={styles.topRow}>
-            <View style={styles.logoContainer}>
-              <Image
-                source={require('@/assets/images/Flood Guard png logo white.png')}
-                style={styles.logoImage}
-                resizeMode="contain"
-              />
+          <View style={styles.headerSection}>
+            <View style={styles.searchShell}>
+              <View style={styles.searchInputRow}>
+                <TextInput
+                  placeholder="Search a location in Romania"
+                  placeholderTextColor="#BEC7E5"
+                  style={styles.searchInput}
+                  value={searchInput}
+                  onChangeText={setSearchInput}
+                  returnKeyType="search"
+                  onSubmitEditing={runLocationSearch}
+                />
+                <Pressable style={styles.searchButton} onPress={runLocationSearch} disabled={isSearching}>
+                  {isSearching ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Feather name="search" size={18} color="#FFFFFF" />
+                  )}
+                </Pressable>
+              </View>
+              {searchError ? <Text style={styles.searchErrorText}>{searchError}</Text> : null}
+              {searchResults.length > 0 && (
+                <ScrollView style={styles.searchResultsWrap} keyboardShouldPersistTaps="handled">
+                  {searchResults.map((result) => (
+                    <Pressable
+                      key={`${result.lat}-${result.lon}`}
+                      style={styles.searchResultItem}
+                      onPress={() => {
+                        setSearchResults([]);
+                        setSearchInput(result.name);
+                        setSearchError(null);
+                        void loadLocationContext(result);
+                      }}>
+                      <Text style={styles.searchResultTitle}>{result.name}</Text>
+                      <Text style={styles.searchResultSubtitle} numberOfLines={1}>
+                        {result.display_name}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+
+            <View style={styles.topRow}>
+              <View style={styles.logoContainer}>
+                <Image
+                  source={require('@/assets/images/Flood Guard png logo white.png')}
+                  style={styles.logoImage}
+                  resizeMode="contain"
+                />
+              </View>
+              <Pressable
+                style={styles.layersButton}
+                onPress={() => setIsLayersOpen(!isLayersOpen)}>
+                <MaterialCommunityIcons name="menu" size={24} color="#FFFFFF" />
+              </Pressable>
             </View>
           </View>
 
@@ -393,7 +710,11 @@ export default function FloodMapScreen() {
 
             {!isPanelCollapsed && panelMode === 'routes' && (
               <View style={styles.routesList}>
-                {ROUTES.map((route, index) => {
+                <Text style={styles.locationContextText}>Selected: {selectedLocationName}</Text>
+                {isLoadingLocationData ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" style={styles.locationLoadingSpinner} />
+                ) : null}
+                {routeCards.map((route, index) => {
                   const isHighlighted = index === 1;
                   return (
                     <View
@@ -401,7 +722,12 @@ export default function FloodMapScreen() {
                       style={[styles.routeCard, isHighlighted && styles.routeCardHighlighted]}>
                       <Text style={styles.routeTitle}>{route.title}</Text>
                       <Text style={styles.routePath}>{route.path}</Text>
-                      <Text style={[styles.routeStatus, route.status === 'Caution' && styles.statusWarn]}>
+                      <Text
+                        style={[
+                          styles.routeStatus,
+                          route.status === 'Caution' && styles.statusWarn,
+                          route.status === 'Priority' && styles.statusPriority,
+                        ]}>
                         {route.status}
                       </Text>
                       <View>
@@ -456,12 +782,26 @@ export default function FloodMapScreen() {
             {!isPanelCollapsed && panelMode === 'alert' && (
               <View style={styles.alertWrap}>
                 <View style={styles.alertHeader}>
-                  <Feather name="alert-triangle" size={24} color="#F17368" />
+                  <Feather
+                    name="alert-triangle"
+                    size={24}
+                    color={riskPoint ? getRiskColor(riskPoint.risk_band) : '#F17368'}
+                  />
                   <Text style={styles.alertText}>
-                    Heavy rain is forecast over the next hours and nearby river levels are rising.
-                    There is high flood risk for low-lying zones.
+                    {situationSummary?.summary ??
+                      'Select a location to load flood conditions and recommendations for that area.'}
                   </Text>
                 </View>
+                {riskPoint && (
+                  <Text style={styles.alertRiskLine}>
+                    Risk: {formatRiskBandLabel(riskPoint.risk_band)} ({riskPoint.risk_score.toFixed(2)})
+                  </Text>
+                )}
+                {riskPoint?.nearby_rivers?.length ? (
+                  <Text style={styles.alertRiversLine}>
+                    Nearby rivers: {riskPoint.nearby_rivers.join(', ')}
+                  </Text>
+                ) : null}
                 <Text style={styles.alertListTitle}>Take action now:</Text>
                 <Text style={styles.alertBullet}>- Keep documents and an emergency bag ready.</Text>
                 <Text style={styles.alertBullet}>- If you are near a river, prepare for evacuation.</Text>
@@ -469,10 +809,15 @@ export default function FloodMapScreen() {
                 <Text style={styles.alertBullet}>- Avoid crossing flooded roads or underpasses.</Text>
 
                 <View style={styles.alertActions}>
-                  <Pressable style={styles.secondaryButton}>
+                  <Pressable style={styles.secondaryButton} onPress={() => setPanelMode('chat')}>
                     <MaterialCommunityIcons name="robot-outline" size={20} color="#DBE2FF" />
                   </Pressable>
-                  <Pressable style={styles.primaryButton}>
+                  <Pressable
+                    style={styles.primaryButton}
+                    onPress={() => {
+                      setPanelMode('routes');
+                      settlePanel('mid');
+                    }}>
                     <Text style={styles.primaryButtonText}>View evacuation routes</Text>
                   </Pressable>
                 </View>
@@ -480,24 +825,60 @@ export default function FloodMapScreen() {
             )}
             </Animated.View>
           </KeyboardAvoidingView>
+
+          {isLayersOpen && (
+            <View style={styles.layersPanel}>
+              <View style={styles.layersPanelContent}>
+                <View style={styles.layersPanelHeader}>
+                  <Text style={styles.layersPanelTitle}>Map Layers</Text>
+                  <Pressable onPress={() => setIsLayersOpen(false)}>
+                    <Feather name="x" size={24} color="#FFFFFF" />
+                  </Pressable>
+                </View>
+
+                <View style={styles.layersPanelSection}>
+                  <Text style={styles.layersSectionTitle}>Map Layers</Text>
+                  <View style={styles.layerToggle}>
+                    <Text style={styles.layerToggleLabel}>Show risk colors</Text>
+                    <Pressable
+                      onPress={() => setShowRisk(!showRisk)}
+                      style={[styles.toggleSwitch, showRisk && styles.toggleSwitchActive]}>
+                      <View style={[styles.toggleThumb, showRisk && styles.toggleThumbActive]} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.layerToggle}>
+                    <Text style={styles.layerToggleLabel}>Show rivers</Text>
+                    <Pressable
+                      onPress={() => setShowRivers(!showRivers)}
+                      style={[styles.toggleSwitch, showRivers && styles.toggleSwitchActive]}>
+                      <View style={[styles.toggleThumb, showRivers && styles.toggleThumbActive]} />
+                    </Pressable>
+                  </View>
+                </View>
+
+                <View style={styles.layersPanelSection}>
+                  <Text style={styles.layersSectionTitle}>Flood Risk Legend</Text>
+                  <View style={styles.legendContainer}>
+                    <Text style={styles.legendCaption}>Relative flood risk (0.0 to 1.0)</Text>
+                    <View style={styles.legendBar}>
+                      {LEGEND_COLORS.map((color, index) => (
+                        <View key={`${color}-${index}`} style={[styles.legendBarSegment, { backgroundColor: color, flex: 1 }]} />
+                      ))}
+                    </View>
+                    <View style={styles.legendTicks}>
+                      <Text style={styles.legendTickText}>0.0</Text>
+                      <Text style={styles.legendTickText}>0.5</Text>
+                      <Text style={styles.legendTickText}>1.0</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            </View>
+          )}
         </SafeAreaView>
       </View>
     </View>
   );
-}
-
-function extractAssistantText(payload: any): string {
-  if (typeof payload?.output_text === 'string' && payload.output_text.length > 0) {
-    return payload.output_text;
-  }
-
-  const chunks = payload?.output?.flatMap?.((entry: any) =>
-    (entry?.content ?? [])
-      .filter((part: any) => part?.type === 'output_text' || part?.type === 'text')
-      .map((part: any) => part?.text ?? part?.output_text ?? '')
-  );
-
-  return Array.isArray(chunks) ? chunks.join('\n').trim() : '';
 }
 
 function RoundActionButton({
@@ -550,14 +931,79 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     ...StyleSheet.absoluteFillObject,
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
+  },
+  headerSection: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    zIndex: 40,
   },
   topRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-start',
+    justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 0,
     marginTop: 8,
+    position: 'relative',
+  },
+  searchShell: {
+    marginTop: 12,
+    marginHorizontal: 12,
+    padding: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(15, 29, 65, 0.84)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+    zIndex: 35,
+  },
+  searchInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  searchInput: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    color: '#FFFFFF',
+    fontSize: 15,
+    backgroundColor: 'rgba(102, 126, 189, 0.32)',
+  },
+  searchButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2E6588',
+  },
+  searchErrorText: {
+    color: '#F7B3AB',
+    marginTop: 7,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  searchResultsWrap: {
+    maxHeight: 168,
+    marginTop: 8,
+  },
+  searchResultItem: {
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 6,
+  },
+  searchResultTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  searchResultSubtitle: {
+    marginTop: 2,
+    color: '#CFD7F4',
+    fontSize: 12,
   },
   logoContainer: {
     width: 200,
@@ -646,6 +1092,16 @@ const styles = StyleSheet.create({
   routesList: {
     gap: 10,
   },
+  locationContextText: {
+    color: '#DCE4FF',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  locationLoadingSpinner: {
+    marginBottom: 4,
+    alignSelf: 'flex-start',
+  },
   routeCard: {
     backgroundColor: 'transparent',
     borderRadius: 20,
@@ -678,6 +1134,9 @@ const styles = StyleSheet.create({
   },
   statusWarn: {
     color: '#D5852A',
+  },
+  statusPriority: {
+    color: '#F17368',
   },
   routeDistance: {
     color: '#FFFFFF',
@@ -757,6 +1216,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 2,
   },
+  alertRiskLine: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+  alertRiversLine: {
+    color: '#D6DDF5',
+    fontSize: 13,
+    marginTop: 2,
+  },
   alertBullet: {
     color: '#F2F5FF',
     fontSize: 15,
@@ -791,5 +1261,128 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 18,
+  },
+  layersButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: 'rgba(102, 126, 189, 0.32)',
+    marginRight: 12,
+  },
+  layersPanel: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    zIndex: 100,
+    justifyContent: 'flex-start',
+    paddingTop: 60,
+  },
+  layersPanelContent: {
+    marginHorizontal: 12,
+    backgroundColor: 'rgba(15, 29, 65, 0.95)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  layersPanelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  layersPanelTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  layersPanelSection: {
+    gap: 12,
+  },
+  layersSectionTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  layersNote: {
+    color: '#CFD7F4',
+    fontSize: 13,
+    fontStyle: 'italic',
+  },
+  layerToggle: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  layerToggleLabel: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  toggleSwitch: {
+    width: 48,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    padding: 2,
+    justifyContent: 'center',
+  },
+  toggleSwitchActive: {
+    backgroundColor: '#4EAFA8',
+  },
+  toggleThumb: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    alignSelf: 'flex-start',
+  },
+  toggleThumbActive: {
+    alignSelf: 'flex-end',
+  },
+  legendContainer: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+  },
+  legendCaption: {
+    color: '#F1F3F5',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  legendBar: {
+    width: '100%',
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.5)',
+    marginBottom: 8,
+    backgroundColor: '#2ca25f',
+    flexDirection: 'row',
+    overflow: 'hidden',
+  },
+  legendBarSegment: {
+    height: '100%',
+  },
+  legendTicks: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: 4,
+  },
+  legendTickText: {
+    color: '#CFD7F4',
+    fontSize: 11,
   },
 });

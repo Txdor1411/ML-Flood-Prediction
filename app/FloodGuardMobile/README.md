@@ -16,6 +16,16 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npx expo start
    ```
 
+3. Configure API base URL
+
+   Create an app env file (for example `.env.local`) and set:
+
+   ```bash
+   EXPO_PUBLIC_API_BASE_URL=http://localhost:8000
+   ```
+
+   The mobile app now uses backend endpoints for location search, flood context, and AI chat.
+
 In the output, you'll find options to open the app in a
 
 - [development build](https://docs.expo.dev/develop/development-builds/introduction/)

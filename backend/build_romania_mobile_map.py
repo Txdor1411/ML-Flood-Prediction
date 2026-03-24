@@ -107,6 +107,8 @@ def build_map(risk: np.ndarray, bounds: rasterio.coords.BoundingBox, rivers_roi:
         control_scale=False,
         zoom_control=False,
         attribution_control=False,
+        min_zoom=6,
+        max_zoom=18,
     )
 
     rgba = (RISK_HEATMAP(risk) * 255).astype(np.uint8)
@@ -135,98 +137,35 @@ def build_map(risk: np.ndarray, bounds: rasterio.coords.BoundingBox, rivers_roi:
     risk_name = risk_overlay.get_name()
     rivers_name = rivers_layer.get_name() if rivers_layer is not None else None
 
-    toggle_script = f"""
-<style>
-.map-toggles {{
-    position: fixed;
-    top: 120px;
-    right: 12px;
-    z-index: 10001;
-    background: rgba(15, 23, 42, 0.9);
-    color: #e9ecef;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: 10px;
-    padding: 8px 10px;
-    font-family: Arial, sans-serif;
-    font-size: 12px;
-    backdrop-filter: blur(2px);
-}}
-.map-toggles label {{
-    display: block;
-    margin: 4px 0;
-    cursor: pointer;
-}}
-.map-toggles .toggle-header {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 6px;
-    font-weight: 600;
-}}
-.map-toggles .collapse-btn {{
-    background: rgba(255,255,255,0.12);
-    color: #f8f9fa;
-    border: 1px solid rgba(255,255,255,0.3);
-    border-radius: 6px;
-    padding: 2px 8px;
-    font-size: 11px;
-    cursor: pointer;
-}}
-.map-toggles.collapsed .toggle-body {{
-    display: none;
-}}
-</style>
-<div class=\"map-toggles\">
-    <div class=\"toggle-header\">
-        <span>Map Layers</span>
-        <button type=\"button\" id=\"toggle-panel\" class=\"collapse-btn\" aria-expanded=\"true\">Hide</button>
-    </div>
-    <div class=\"toggle-body\">
-        <label><input type=\"checkbox\" id=\"toggle-risk\" checked> Show risk colors</label>
-        <label><input type=\"checkbox\" id=\"toggle-rivers\" checked> Show rivers</label>
-    </div>
-</div>
+    # Add max bounds restriction script only
+    bounds_script = f"""
 <script>
 (function() {{
-    var panel = document.querySelector('.map-toggles');
-    var panelBtn = document.getElementById('toggle-panel');
-    var riskToggle = document.getElementById('toggle-risk');
-    var riverToggle = document.getElementById('toggle-rivers');
-
     var mapRef = null;
-    var riskLayer = null;
-    var riversLayer = null;
+    var riskRef = null;
+    var riversRef = null;
     var tries = 0;
     var maxTries = 80;
 
-    panelBtn.addEventListener('click', function() {{
-        var isCollapsed = panel.classList.toggle('collapsed');
-        panelBtn.textContent = isCollapsed ? 'Show' : 'Hide';
-        panelBtn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
-    }});
-
-    function applyLayerState() {{
-        if (!mapRef || !riskLayer) return;
-        if (riskToggle.checked) mapRef.addLayer(riskLayer);
-        else mapRef.removeLayer(riskLayer);
-
-        if (riversLayer) {{
-            if (riverToggle.checked) mapRef.addLayer(riversLayer);
-            else mapRef.removeLayer(riversLayer);
-        }}
+    function setMapBounds() {{
+        if (!mapRef) return;
+        var maxBounds = L.latLngBounds(
+            L.latLng({bounds.bottom}, {bounds.left}),
+            L.latLng({bounds.top}, {bounds.right})
+        );
+        mapRef.setMaxBounds(maxBounds);
     }}
-
-    riskToggle.addEventListener('change', applyLayerState);
-    riverToggle.addEventListener('change', applyLayerState);
 
     function initWhenReady() {{
         mapRef = window['{map_name}'] || null;
-        riskLayer = window['{risk_name}'] || null;
-        riversLayer = window['{rivers_name}' ] || null;
+        riskRef = window['{risk_name}'] || null;
+        riversRef = window['{rivers_name}'] || null;
 
-        if (mapRef && riskLayer) {{
-            applyLayerState();
+        if (mapRef) {{
+            window.__floodguardMap = mapRef;
+            window.__floodguardRiskLayer = riskRef;
+            window.__floodguardRiversLayer = riversRef;
+            setMapBounds();
             return;
         }}
 
@@ -238,53 +177,7 @@ def build_map(risk: np.ndarray, bounds: rasterio.coords.BoundingBox, rivers_roi:
 }})();
 </script>
 """
-    m.get_root().html.add_child(folium.Element(toggle_script))
-
-    m.get_root().html.add_child(
-        folium.Element(
-            """
-<style>
-.risk-legend {
-  position: fixed;
-    left: 50%;
-    top: 22px;
-  transform: translateX(-50%);
-  z-index: 9999;
-    background: rgba(15, 23, 42, 0.92);
-    color: #f1f3f5;
-    padding: 8px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
-    box-shadow: 0 6px 16px rgba(0,0,0,0.28);
-  font-family: Arial, sans-serif;
-}
-.risk-legend .caption {
-  font-size: 12px;
-  margin-bottom: 6px;
-    text-align: center;
-}
-.risk-legend .bar {
-  width: 260px;
-  height: 14px;
-  border-radius: 4px;
-    border: 1px solid rgba(255,255,255,0.5);
-  background: linear-gradient(to right, #2ca25f 0%, #fee08b 50%, #d73027 100%);
-}
-.risk-legend .ticks {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  margin-top: 3px;
-}
-</style>
-<div class=\"risk-legend\">
-  <div class=\"caption\">Relative flood risk (0.0 to 1.0)</div>
-  <div class=\"bar\"></div>
-  <div class=\"ticks\"><span>0.0</span><span>0.5</span><span>1.0</span></div>
-</div>
-"""
-        )
-    )
+    m.get_root().html.add_child(folium.Element(bounds_script))
 
     return m
 
